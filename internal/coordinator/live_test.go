@@ -31,7 +31,7 @@ func TestLiveRecovery(t *testing.T) {
 		name, kind string
 		async      bool
 		lost       string
-	}{{"crash", "crash", false, "1"}, {"hang", "hang", false, "1"}, {"slow", "slow", false, "1"}, {"async-durable-rollback", "crash", true, "7"}} {
+	}{{"crash", "crash", false, "1"}, {"hang", "hang", false, "1"}, {"slow", "slow", false, "1"}, {"async-durable-rollback", "crash", true, "7"}, {"fast-workers", "crash", false, "1"}} {
 		kind := scenario.kind
 		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -44,6 +44,10 @@ func TestLiveRecovery(t *testing.T) {
 			csvPath := filepath.Join(dir, "live.csv")
 			logs := registrationLog{lines: make(chan string, 100)}
 			cfg := Config{Workers: 3, Spares: 1, CheckpointEvery: 3, Window: 2, StepTime: 3 * time.Millisecond, CheckpointCost: time.Millisecond, SnapshotCost: time.Millisecond, HeartbeatTimeout: 200 * time.Millisecond, ProgressTimeout: 80 * time.Millisecond, Watchdog: true, StragglerMultiple: 2}
+			actualStepTime := cfg.StepTime
+			if scenario.name == "fast-workers" {
+				cfg.StepTime = time.Second
+			}
 			if scenario.async {
 				cfg.Async = true
 				cfg.CheckpointCost = 200 * time.Millisecond
@@ -56,7 +60,7 @@ func TestLiveRecovery(t *testing.T) {
 			}()
 			workerResults := make(chan error, 4)
 			for _, id := range []string{"faulty", "healthy1", "healthy2", "spare"} {
-				wc := worker.Config{Address: listener.Addr().String(), ID: id, Directory: dir, StepTime: cfg.StepTime, Heartbeat: 5 * time.Millisecond, BlobSize: 128, SlowFactor: 8, FaultAfter: 8}
+				wc := worker.Config{Address: listener.Addr().String(), ID: id, Directory: dir, StepTime: actualStepTime, Heartbeat: 5 * time.Millisecond, BlobSize: 128, SlowFactor: 8, FaultAfter: 8}
 				if id == "faulty" {
 					wc.Fault = kind
 				}
@@ -118,9 +122,35 @@ func TestLiveRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			usefulColumn, wallColumn := -1, 1
+			for i, column := range metricRows[0] {
+				if column == "useful_seconds" || column == "useful_time_seconds" {
+					usefulColumn = i
+				}
+				if column == "wall_time_seconds" {
+					wallColumn = i
+				}
+			}
+			if usefulColumn < 0 {
+				t.Fatal("metrics missing useful time")
+			}
+			usefulSeconds, err := strconv.ParseFloat(metricRows[1][usefulColumn], 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wallSeconds, err := strconv.ParseFloat(metricRows[1][wallColumn], 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if usefulSeconds > wallSeconds || usefulSeconds < 0 {
+				t.Fatalf("useful time %g exceeds wall time %g", usefulSeconds, wallSeconds)
+			}
 			goodput, err := strconv.ParseFloat(metricRows[1][7], 64)
 			if err != nil || goodput < 0 || goodput > 1 {
 				t.Fatalf("invalid goodput %v: %v", goodput, err)
+			}
+			if scenario.name == "fast-workers" && goodput >= 1 {
+				t.Fatal("fast workers inflated useful time beyond wall time")
 			}
 			if scenario.async {
 				for _, r := range rows[1:] {

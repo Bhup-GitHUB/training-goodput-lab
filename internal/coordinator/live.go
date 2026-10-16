@@ -134,14 +134,15 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 	}
 	engine := NewEngine(cfg)
 	started := time.Now()
-	run := metrics.Run{Workers: cfg.Workers}
+	run := metrics.Run{Workers: cfg.Workers, Seed: live.Seed}
+	var useful, checkpointUseful, candidateUseful time.Duration
 	faultStarts := map[string]time.Time{}
 	checkpointStarted := time.Now()
 	recoveryStarted := time.Now()
 	defer func() {
 		run.WallTime = time.Since(started)
 		run.Steps = engine.Step
-		run.UsefulTime = time.Duration(engine.Step) * cfg.StepTime
+		run.UsefulTime = useful
 		run.LostSteps = engine.LostSteps
 		run.SparesUsed = engine.SparesUsed
 		metrics.PrintSummary(os.Stdout, run)
@@ -217,6 +218,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 	}
 	startCheckpoint := func(initial bool) error {
 		checkpointStarted = time.Now()
+		candidateUseful = useful
 		checkpointStep = engine.Step
 		candidatePath = ""
 		checkpointPending = map[string]bool{}
@@ -262,6 +264,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 		if err := engine.Recover(id, kind, time.Since(started)); err != nil {
 			return err
 		}
+		useful = checkpointUseful
 		run.Failures = append(run.Failures, metrics.Failure{Kind: kind, At: detectionStart.Sub(started), Detection: time.Since(detectionStart), LostSteps: engine.LostSteps - lostBefore, Detected: true})
 		delete(active, id)
 		delete(peers, id)
@@ -373,6 +376,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 						run.CheckpointTime += time.Since(checkpointStarted)
 					}
 					engine.CommitCheckpoint(checkpointStep)
+					checkpointUseful = candidateUseful
 					checkpointPath = candidatePath
 					checkpointStep = -1
 					record("checkpoint", p.id, "")
@@ -411,6 +415,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 					continue
 				}
 				if len(pending) == 0 {
+					useful += min(cfg.StepTime, time.Since(stepStart))
 					due := engine.CompleteStep()
 					record("step", "", "")
 					if live.MaxSteps > 0 && engine.Step >= live.MaxSteps {
