@@ -2,3 +2,6 @@
 /checkpoints/
 /results/
 *.test
+/.training-goodput/
+/run/
+/live.csv*
