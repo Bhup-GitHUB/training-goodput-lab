@@ -411,6 +411,11 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 				}
 				delete(pending, p.id)
 				if engine.Observe(p.id, m.Duration) {
+					if len(pending) == 0 {
+						useful += min(cfg.StepTime, time.Since(stepStart))
+						engine.CompleteStep()
+						record("step", "", "")
+					}
 					if err := recoverWorker(p.id, fault.Slow); err != nil {
 						return err
 					}

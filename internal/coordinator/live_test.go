@@ -33,7 +33,7 @@ func TestLiveRecovery(t *testing.T) {
 		name, kind string
 		async      bool
 		lost       string
-	}{{"crash", "crash", false, "1"}, {"hang", "hang", false, "1"}, {"slow", "slow", false, "1"}, {"async-durable-rollback", "crash", true, "7"}, {"fast-workers", "crash", false, "1"}} {
+	}{{"crash", "crash", false, "1"}, {"hang", "hang", false, "1"}, {"slow", "slow", false, "3"}, {"async-durable-rollback", "crash", true, "7"}, {"fast-workers", "crash", false, "1"}} {
 		kind := scenario.kind
 		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
