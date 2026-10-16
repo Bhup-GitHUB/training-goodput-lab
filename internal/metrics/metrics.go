@@ -46,13 +46,30 @@ func WriteCSV(path string, r Run) error {
 		return err
 	}
 	w := csv.NewWriter(f)
-	rows := [][]string{{"record", "time_seconds", "step", "event", "detection_seconds", "recovery_seconds", "lost_steps", "goodput"}, {"summary", seconds(r.WallTime), strconv.Itoa(r.Steps), "", "", "", strconv.Itoa(r.LostSteps), strconv.FormatFloat(r.Goodput(), 'f', 9, 64)}}
+	rows := [][]string{{"record", "time_seconds", "step", "event", "detection_seconds", "recovery_seconds", "lost_steps", "goodput", "workers", "seed", "spares_used", "checkpoint_seconds", "useful_time_seconds", "detected", "censored_elapsed_seconds", "failures", "detected_failures", "undetected_failures", "wall_time_seconds"}}
+	detected := 0
+	for _, failure := range r.Failures {
+		if failure.Detected {
+			detected++
+		}
+	}
+	rows = append(rows, []string{"summary", seconds(r.WallTime), strconv.Itoa(r.Steps), "", "", "", strconv.Itoa(r.LostSteps), strconv.FormatFloat(r.Goodput(), 'f', 9, 64), strconv.Itoa(r.Workers), strconv.FormatInt(r.Seed, 10), strconv.Itoa(r.SparesUsed), seconds(r.CheckpointTime), seconds(r.UsefulTime), "", "", strconv.Itoa(len(r.Failures)), strconv.Itoa(detected), strconv.Itoa(len(r.Failures) - detected), seconds(r.WallTime)})
 	for _, p := range r.Timeline {
-		rows = append(rows, []string{"timeline", seconds(p.Time), strconv.Itoa(p.Step), p.Event, "", "", "", ""})
+		row := make([]string, len(rows[0]))
+		row[0], row[1], row[2], row[3] = "timeline", seconds(p.Time), strconv.Itoa(p.Step), p.Event
+		rows = append(rows, row)
 	}
 	for _, e := range r.Failures {
-		rows = append(rows, []string{"failure", seconds(e.At), "", string(e.Kind), seconds(e.Detection), seconds(e.Recovery), strconv.Itoa(e.LostSteps), ""})
+		row := make([]string, len(rows[0]))
+		row[0], row[1], row[3], row[6], row[13] = "failure", seconds(e.At), string(e.Kind), strconv.Itoa(e.LostSteps), strconv.FormatBool(e.Detected)
+		if e.Detected {
+			row[4], row[5] = seconds(e.Detection), seconds(e.Recovery)
+		} else {
+			row[14] = seconds(e.Detection)
+		}
+		rows = append(rows, row)
 	}
+
 	err = w.WriteAll(rows)
 	if err == nil {
 		err = w.Error()
@@ -67,21 +84,30 @@ func seconds(t time.Duration) string { return strconv.FormatFloat(t.Seconds(), '
 func PrintSummary(w io.Writer, r Run) {
 	fmt.Fprintln(w, "workers  steps  goodput  failures  lost_steps  spares  checkpoint_s  wall_s")
 	fmt.Fprintf(w, "%7d %6d %7.2f%% %9d %11d %7d %13.2f %9.2f\n", r.Workers, r.Steps, 100*r.Goodput(), len(r.Failures), r.LostSteps, r.SparesUsed, r.CheckpointTime.Seconds(), r.WallTime.Seconds())
-	fmt.Fprintln(w, "fault   count  mean_detect_s  mean_recover_s  mean_lost_steps")
+	fmt.Fprintln(w, "fault   count  detected  undetected_censored  mean_detect_s  mean_recover_s  mean_lost_steps")
 	for _, kind := range []fault.Kind{fault.Crash, fault.Hang, fault.Slow} {
-		n := 0
-		var d, t time.Duration
+		count, detected := 0, 0
+		var detection, recovery time.Duration
 		lost := 0
-		for _, e := range r.Failures {
-			if e.Kind == kind {
-				n++
-				d += e.Detection
-				t += e.Recovery
-				lost += e.LostSteps
+		for _, failure := range r.Failures {
+			if failure.Kind != kind {
+				continue
+			}
+			count++
+			if failure.Detected {
+				detected++
+				detection += failure.Detection
+				recovery += failure.Recovery
+				lost += failure.LostSteps
 			}
 		}
-		if n > 0 {
-			fmt.Fprintf(w, "%-7s %5d %14.3f %15.3f %16.2f\n", kind, n, d.Seconds()/float64(n), t.Seconds()/float64(n), float64(lost)/float64(n))
+		if count == 0 {
+			continue
 		}
+		if detected == 0 {
+			fmt.Fprintf(w, "%-7s %5d %9d %20d %14s %15s %16s\n", kind, count, detected, count-detected, "-", "-", "-")
+			continue
+		}
+		fmt.Fprintf(w, "%-7s %5d %9d %20d %14.3f %15.3f %16.2f\n", kind, count, detected, count-detected, detection.Seconds()/float64(detected), recovery.Seconds()/float64(detected), float64(lost)/float64(detected))
 	}
 }
