@@ -175,6 +175,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 	phase := "waiting"
 	pending := map[string]bool{}
 	checkpointPending := map[string]bool{}
+	snapshotPending := map[string]bool{}
 	checkpointStep := -1
 	checkpointPath := ""
 	candidatePath := ""
@@ -221,12 +222,16 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 		checkpointPending = map[string]bool{}
 		if !cfg.Async || initial {
 			phase = "checkpoint"
+		} else {
+			phase = "snapshot"
+			snapshotPending = map[string]bool{}
 		}
 		for id, p := range active {
 			checkpointPending[id] = true
 			pause, cost := cfg.CheckpointCost, time.Duration(0)
 			if cfg.Async && !initial {
 				pause, cost = cfg.SnapshotCost, cfg.CheckpointCost
+				snapshotPending[id] = true
 			}
 			if err := send(p, worker.Message{Type: "checkpoint", Step: checkpointStep, Generation: engine.Generation, Async: cfg.Async && !initial, Pause: pause, Cost: cost}); err != nil {
 				emit(liveEvent{peer: p, err: err})
@@ -270,6 +275,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 		pending = map[string]bool{}
 		record("failure", id, kind)
 		record("rollback", id, kind)
+		record("promoted", replacement.id, kind)
 		for id, p := range active {
 			pending[id] = true
 			if err := send(p, worker.Message{Type: "restore", Path: checkpointPath, Pause: cfg.RecoveryTime, Step: engine.CheckpointStep, Generation: engine.Generation}); err != nil {
@@ -297,8 +303,10 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 				peers[p.id] = p
 				if len(active) < cfg.Workers && phase == "waiting" {
 					active[p.id] = p
+					record("active", p.id, "")
 				} else {
 					spares = append(spares, p)
+					record("spare", p.id, "")
 				}
 				record("registered", p.id, "")
 				if phase == "waiting" && len(active) == cfg.Workers && len(spares) >= cfg.Spares {
@@ -338,6 +346,17 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 			switch m.Type {
 			case "fault":
 				faultStarts[p.id] = time.Now()
+			case "snapshotted":
+				if phase != "snapshot" || m.Step != checkpointStep || !snapshotPending[p.id] {
+					continue
+				}
+				delete(snapshotPending, p.id)
+				if len(snapshotPending) == 0 {
+					record("snapshot", p.id, "")
+					if err := startStep(); err != nil {
+						return err
+					}
+				}
 			case "checkpointed":
 				if m.Step != checkpointStep || !checkpointPending[p.id] {
 					continue
@@ -402,9 +421,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 						if err := startCheckpoint(false); err != nil {
 							return err
 						}
-						if !cfg.Async {
-							continue
-						}
+						continue
 					}
 					if err := startStep(); err != nil {
 						return err

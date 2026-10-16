@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,8 +27,13 @@ func (w registrationLog) Write(p []byte) (int, error) {
 }
 
 func TestLiveRecovery(t *testing.T) {
-	for _, kind := range []string{"crash", "hang", "slow"} {
-		t.Run(kind, func(t *testing.T) {
+	for _, scenario := range []struct {
+		name, kind string
+		async      bool
+		lost       string
+	}{{"crash", "crash", false, "1"}, {"hang", "hang", false, "1"}, {"slow", "slow", false, "1"}, {"async-durable-rollback", "crash", true, "7"}} {
+		kind := scenario.kind
+		t.Run(scenario.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -38,6 +44,12 @@ func TestLiveRecovery(t *testing.T) {
 			csvPath := filepath.Join(dir, "live.csv")
 			logs := registrationLog{lines: make(chan string, 100)}
 			cfg := Config{Workers: 3, Spares: 1, CheckpointEvery: 3, Window: 2, StepTime: 3 * time.Millisecond, CheckpointCost: time.Millisecond, SnapshotCost: time.Millisecond, HeartbeatTimeout: 200 * time.Millisecond, ProgressTimeout: 80 * time.Millisecond, Watchdog: true, StragglerMultiple: 2}
+			if scenario.async {
+				cfg.Async = true
+				cfg.CheckpointCost = 200 * time.Millisecond
+				cfg.SnapshotCost = 60 * time.Millisecond
+				cfg.ProgressTimeout = 20 * time.Millisecond
+			}
 			result := make(chan error, 1)
 			go func() {
 				result <- ServeLive(ctx, listener, cfg, LiveConfig{MaxSteps: 12, CSV: csvPath, Logger: log.New(logs, "", 0)})
@@ -90,11 +102,37 @@ func TestLiveRecovery(t *testing.T) {
 				case "failure":
 					failed = r[4] == "faulty" && r[5] == kind
 				case "rollback":
-					rolled = r[2] == r[3] && r[6] == "1"
+					rolled = r[2] == r[3] && r[6] == scenario.lost
 				case "recovered":
 					recovered = true
 				case "finished":
 					finished = r[2] == "12"
+				}
+			}
+			metricsFile, err := os.Open(csvPath + ".metrics.csv")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer metricsFile.Close()
+			metricRows, err := csv.NewReader(metricsFile).ReadAll()
+			if err != nil {
+				t.Fatal(err)
+			}
+			goodput, err := strconv.ParseFloat(metricRows[1][7], 64)
+			if err != nil || goodput < 0 || goodput > 1 {
+				t.Fatalf("invalid goodput %v: %v", goodput, err)
+			}
+			if scenario.async {
+				for _, r := range rows[1:] {
+					if r[1] == "rollback" {
+						if r[3] != "0" {
+							t.Fatalf("restored unfinished checkpoint %s", r[3])
+						}
+						break
+					}
+					if r[1] == "checkpoint" && r[3] != "0" {
+						t.Fatalf("checkpoint prematurely durable: %v", r)
+					}
 				}
 			}
 			if !failed || !rolled || !recovered || !finished {

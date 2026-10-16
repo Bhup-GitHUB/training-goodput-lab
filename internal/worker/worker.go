@@ -148,7 +148,7 @@ func Run(ctx context.Context, cfg Config) error {
 				if !pause(ctx, m.Cost) {
 					return
 				}
-				path := filepath.Join(cfg.Directory, cfg.ID, fmt.Sprintf("g%d-step%d.json", m.Generation, m.Step))
+				path := filepath.Join(cfg.Directory, cfg.ID, fmt.Sprintf("g%d-step%d.bin", m.Generation, m.Step))
 				err := checkpoint.Save(path, snapshot)
 				result := Message{Type: "checkpointed", ID: cfg.ID, Step: m.Step, Generation: m.Generation, Path: path}
 				if err != nil {
@@ -159,6 +159,9 @@ func Run(ctx context.Context, cfg Config) error {
 				}
 			}
 			if m.Async {
+				if err := send(Message{Type: "snapshotted", ID: cfg.ID, Step: m.Step, Generation: m.Generation}); err != nil {
+					return err
+				}
 				go write()
 			} else {
 				write()
