@@ -1,6 +1,7 @@
 package coordinator
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"training-goodput-lab/internal/checkpoint"
 
 	"training-goodput-lab/internal/worker"
 )
@@ -63,6 +65,12 @@ func TestLiveRecovery(t *testing.T) {
 				wc := worker.Config{Address: listener.Addr().String(), ID: id, Directory: dir, StepTime: actualStepTime, Heartbeat: 5 * time.Millisecond, BlobSize: 128, SlowFactor: 8, FaultAfter: 8}
 				if id == "faulty" {
 					wc.Fault = kind
+				} else if id == "healthy1" {
+					wc.BlobSize = 64
+				} else if id == "healthy2" {
+					wc.BlobSize = 256
+				} else {
+					wc.BlobSize = 512
 				}
 				go func() { workerResults <- worker.Run(ctx, wc) }()
 				registered := false
@@ -89,6 +97,19 @@ func TestLiveRecovery(t *testing.T) {
 				case <-workerResults:
 				case <-time.After(time.Second):
 					t.Fatal("worker did not stop")
+				}
+			}
+			if !scenario.async {
+				for id, size := range map[string]int{"healthy1": 64, "healthy2": 256, "spare": 128} {
+					restored, err := checkpoint.Load(filepath.Join(dir, id, "g1-step9.bin"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					expected := checkpoint.NewState(size)
+					expected.Advance(9)
+					if restored.Step != expected.Step || restored.Loss != expected.Loss || !bytes.Equal(restored.Blob, expected.Blob) {
+						t.Fatalf("worker %s lost its state during restore: size=%d expected=%d", id, len(restored.Blob), size)
+					}
 				}
 			}
 			f, err := os.Open(csvPath)

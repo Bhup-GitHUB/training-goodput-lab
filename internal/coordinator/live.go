@@ -178,8 +178,8 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 	checkpointPending := map[string]bool{}
 	snapshotPending := map[string]bool{}
 	checkpointStep := -1
-	checkpointPath := ""
-	candidatePath := ""
+	checkpointPaths := map[string]string{}
+	candidatePaths := map[string]string{}
 	stepStart := time.Now()
 	send := func(p *livePeer, m worker.Message) error {
 		if err := p.conn.SetWriteDeadline(time.Now().Add(time.Second)); err != nil {
@@ -220,7 +220,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 		checkpointStarted = time.Now()
 		candidateUseful = useful
 		checkpointStep = engine.Step
-		candidatePath = ""
+		candidatePaths = map[string]string{}
 		checkpointPending = map[string]bool{}
 		if !cfg.Async || initial {
 			phase = "checkpoint"
@@ -246,7 +246,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 		if !ok {
 			return nil
 		}
-		if checkpointPath == "" {
+		if checkpointPaths[id] == "" {
 			return fmt.Errorf("worker %s failed before initial checkpoint", id)
 		}
 		if len(spares) == 0 {
@@ -272,6 +272,8 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 		replacement := spares[0]
 		spares = spares[1:]
 		active[replacement.id] = replacement
+		checkpointPaths[replacement.id] = checkpointPaths[id]
+		delete(checkpointPaths, id)
 		phase = "restore"
 		checkpointStep = -1
 		checkpointPending = map[string]bool{}
@@ -281,7 +283,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 		record("promoted", replacement.id, kind)
 		for id, p := range active {
 			pending[id] = true
-			if err := send(p, worker.Message{Type: "restore", Path: checkpointPath, Pause: cfg.RecoveryTime, Step: engine.CheckpointStep, Generation: engine.Generation}); err != nil {
+			if err := send(p, worker.Message{Type: "restore", Path: checkpointPaths[id], Pause: cfg.RecoveryTime, Step: engine.CheckpointStep, Generation: engine.Generation}); err != nil {
 				emit(liveEvent{peer: p, err: err})
 			}
 		}
@@ -368,7 +370,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 					return fmt.Errorf("checkpoint %s: %s", p.id, m.Error)
 				}
 				delete(checkpointPending, p.id)
-				candidatePath = m.Path
+				candidatePaths[p.id] = m.Path
 				if len(checkpointPending) == 0 {
 					if cfg.Async && phase != "checkpoint" {
 						run.CheckpointTime += cfg.SnapshotCost
@@ -377,7 +379,7 @@ func ServeLive(ctx context.Context, listener net.Listener, cfg Config, live Live
 					}
 					engine.CommitCheckpoint(checkpointStep)
 					checkpointUseful = candidateUseful
-					checkpointPath = candidatePath
+					checkpointPaths = candidatePaths
 					checkpointStep = -1
 					record("checkpoint", p.id, "")
 					if phase == "checkpoint" {
