@@ -54,6 +54,7 @@ func RunSimulation(s SimConfig) (metrics.Run, error) {
 	stepStart := time.Duration(0)
 	base := c.StepTime
 	stepEnd := base
+	stepWatchdog := never
 	pauseEnd := never
 	recoveryEnd := never
 	writeEnd := never
@@ -72,7 +73,15 @@ func RunSimulation(s SimConfig) (metrics.Run, error) {
 		base += time.Duration(timingRNG.Float64() * .02 * float64(c.StepTime))
 		stepStart = v.Now()
 		stepEnd = stepStart + base
-		for _, p := range pending {
+		stepWatchdog = never
+		if c.Watchdog {
+			stepWatchdog = stepStart + c.ProgressTimeout
+		}
+		for i := range pending {
+			p := &pending[i]
+			if p.kind == fault.Hang && c.Watchdog {
+				p.detect = stepStart + c.ProgressTimeout
+			}
 			if p.kind == fault.Crash || p.kind == fault.Hang {
 				stepEnd = never
 			}
@@ -83,7 +92,7 @@ func RunSimulation(s SimConfig) (metrics.Run, error) {
 	}
 	startStep()
 	for v.Now() < s.Duration {
-		eventAt := min(s.Duration, nextFault, stepEnd, pauseEnd, recoveryEnd, writeEnd)
+		eventAt := min(s.Duration, nextFault, stepEnd, pauseEnd, recoveryEnd, writeEnd, stepWatchdog)
 		for _, p := range pending {
 			eventAt = min(eventAt, p.detect)
 		}
@@ -109,7 +118,7 @@ func RunSimulation(s SimConfig) (metrics.Run, error) {
 			if kind == fault.Crash {
 				p.detect = v.Now() + c.HeartbeatTimeout
 			}
-			if kind == fault.Hang && c.Watchdog {
+			if kind == fault.Hang && c.Watchdog && pauseEnd == never && recoveryEnd == never {
 				p.detect = max(v.Now(), stepStart+c.ProgressTimeout)
 			}
 			pending = append(pending, p)
@@ -122,6 +131,15 @@ func RunSimulation(s SimConfig) (metrics.Run, error) {
 				}
 			}
 			nextFault = v.Now() + max(time.Nanosecond, fault.Next(rng, jobMTBF))
+		}
+		if v.Now() == stepWatchdog {
+			stepWatchdog = never
+			if stepEnd > v.Now() {
+				if len(pending) == 0 {
+					return r, fmt.Errorf("progress timeout shorter than healthy step duration")
+				}
+				pending[0].detect = v.Now()
+			}
 		}
 		detected := -1
 		for i, p := range pending {
@@ -143,6 +161,7 @@ func RunSimulation(s SimConfig) (metrics.Run, error) {
 			f.LostSteps = before - e.Step
 			pending = append(pending[:detected], pending[detected+1:]...)
 			useful = committedUseful
+			stepWatchdog = never
 			slowSteps = 0
 			stepEnd = never
 			pauseEnd = never
@@ -163,6 +182,7 @@ func RunSimulation(s SimConfig) (metrics.Run, error) {
 		}
 		if v.Now() == stepEnd {
 			useful += base
+			stepWatchdog = never
 			due := e.CompleteStep()
 			addPoint("step")
 			var slow *simulatedFault

@@ -16,7 +16,7 @@ type Config struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Workers: 8, Spares: 1000, CheckpointEvery: 50, Window: 5, StepTime: 30 * time.Second, CheckpointCost: 120 * time.Second, SnapshotCost: 2 * time.Second, HeartbeatTimeout: 10 * time.Second, ProgressTimeout: 90 * time.Second, RecoveryTime: 60 * time.Second, Watchdog: true, StragglerMultiple: 2}
+	return Config{Workers: 8, Spares: 1000, CheckpointEvery: 50, Window: 5, StepTime: 30 * time.Second, CheckpointCost: 120 * time.Second, SnapshotCost: 2 * time.Second, HeartbeatTimeout: 10 * time.Second, ProgressTimeout: 150 * time.Second, RecoveryTime: 60 * time.Second, Watchdog: true, StragglerMultiple: 2}
 }
 func (c Config) Validate() error {
 	if c.Workers < 1 || c.Spares < 0 || c.CheckpointEvery < 1 || c.Window < 1 {
@@ -90,7 +90,16 @@ func (e *Engine) Observe(worker string, d time.Duration) bool {
 	if len(means)%2 == 0 {
 		median = (means[len(means)/2-1] + median) / 2
 	}
-	return own > median*e.Config.StragglerMultiple
+	threshold := median * e.Config.StragglerMultiple
+	if own <= threshold {
+		return false
+	}
+	for _, duration := range h {
+		if float64(duration) <= threshold {
+			return false
+		}
+	}
+	return true
 }
 
 func (e *Engine) ProgressExpired(elapsed time.Duration) bool {
