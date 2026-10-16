@@ -76,7 +76,7 @@ func RenderLines(path, title, xLabel, yLabel string, series []Series, optimum fl
 func RenderDetection(path string, watchdog, heartbeat float64, censored bool) error {
 	p := plot.New()
 	p.Title.Text = "Silent hangs: detection versus observation limit"
-	p.Y.Label.Text = "Seconds since hang (log scale)"
+	p.Y.Label.Text = "Mean seconds since hang (log scale)"
 	for i, seconds := range []float64{watchdog, heartbeat} {
 		value := max(1, seconds)
 		stem, err := plotter.NewLine(plotter.XYs{{X: float64(i), Y: 1}, {X: float64(i), Y: value}})
@@ -114,15 +114,25 @@ func RenderTimeline(path string, points []metrics.Point) error {
 	p.Title.Text = "Training progress, failures and rollback"
 	p.X.Label.Text = "Elapsed minutes"
 	p.Y.Label.Text = "Training step"
+	p.Y.Tick.Marker = plot.TickerFunc(func(low, high float64) []plot.Tick {
+		ticks := (plot.DefaultTicks{}).Ticks(low, high)
+		for i := range ticks {
+			if ticks[i].Label != "" {
+				ticks[i].Label = fmt.Sprintf("%.0f", ticks[i].Value)
+			}
+		}
+		return ticks
+	})
 	p.Add(plotter.NewGrid())
 	p.Legend.Top = true
+	p.Legend.Left = true
 	if len(points) == 0 {
 		return fmt.Errorf("timeline has no points")
 	}
 	progress := make(plotter.XYs, len(points))
 	events := map[string]plotter.XYs{}
 	for i, point := range points {
-		xy := struct{ X, Y float64 }{X: point.Time.Minutes(), Y: float64(point.Step)}
+		xy := plotter.XY{X: point.Time.Minutes(), Y: float64(point.Step)}
 		progress[i] = xy
 		for _, event := range []string{"failure", "rollback", "recover", "checkpoint"} {
 			if strings.Contains(point.Event, event) {
