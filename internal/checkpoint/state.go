@@ -94,5 +94,7 @@ func Load(path string) (State, error) {
 	if step > uint64(^uint(0)>>1) || math.IsNaN(loss) || math.IsInf(loss, 0) {
 		return State{}, errors.New("invalid checkpoint state")
 	}
-	return State{Step: int(step), Loss: loss, Blob: append([]byte(nil), payload[24:]...)}, nil
+	blob := make([]byte, len(payload)-24)
+	copy(blob, payload[24:])
+	return State{Step: int(step), Loss: loss, Blob: blob}, nil
 }
